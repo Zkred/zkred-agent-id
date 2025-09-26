@@ -4,6 +4,10 @@
 */
 import bs58 from "bs58";
 import crc from "crc";
+import { ethers } from "ethers";
+import identityRegistryABI from "./contracts/IndentityRegistry.json";
+import dotenv from "dotenv";
+dotenv.config();
 
 /**
 * Generate Privado ID DID from Ethereum address
@@ -91,8 +95,148 @@ function getETHPublicKeyFromDID(didFull: string): string | null {
   }
 }
 
+/**
+* Register agent to central Registry
+* @param privateKey  - privateKey of wallet to register
+* @param description - Description of the agent
+* @param chainId - Chain Id
+* @param serviceEndpoint - Service endpoint URL
+* @param rpcUrl - RPC url for the chain
+*/
+async function createIdentity(
+  privateKey: string,
+  description: string,
+  chainId: 80002 | 296,
+  serviceEndpoint: string,
+  rpcUrl: string = ''
+) {
+  try {
+    // set rpcUrl if not provided based on chainId
+    if (!rpcUrl) {
+      if (chainId === 80002) {
+        rpcUrl = process.env.AMOY_RPC_URL as string
+      }
+      if (chainId === 296) {
+        rpcUrl = process.env.HEDERA_RPC_URL as string
+      }
+    }
+    
+    // Generate public key from privateKey using ethers
+    if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+      throw new Error('Private key must be a 0x-prefixed 64-hex string');
+    }
+    
+    const publicKey = ethers.computeAddress(privateKey);
+    // Generate signer
+    const provider = new ethers.JsonRpcProvider(rpcUrl as string);
+    const signer = new ethers.Wallet(privateKey, provider);
+    
+    // Decide registry contract based on chain
+    let REGISTRY_CONTRACT = process.env.IDENTITY_REGISTRY_AMOY;
+    if (chainId === 296) REGISTRY_CONTRACT = process.env.IDENTITY_REGISTRY_HEDERA;
+    
+    const registry = new ethers.Contract(REGISTRY_CONTRACT as string, identityRegistryABI.abi, signer);
+    const registrationFee = ethers.parseEther("0.01");
+    
+    const agentDetails = await registry.getAgentByAddress(publicKey);
+
+    const availableBalance = await provider.getBalance(publicKey);
+    const balanceInEther = ethers.formatEther(availableBalance);
+
+    if (+balanceInEther < registrationFee) {
+      throw new Error("Insufficient balance to cover registration fee");
+    }
+
+    if (agentDetails?.length) {
+      throw new Error("Agent already registered");
+    }
+
+    const did = generateDID(publicKey, "polygon", "amoy");
+    const tx = await registry.registerAgent(did, description, serviceEndpoint, {
+      value: registrationFee,
+    });
+    
+    await tx.wait();
+    
+    return {
+      txHash: tx.hash,
+      did,
+      description,
+      serviceEndpoint,
+      agentId: Number(agentDetails[1])
+    }
+  } catch (err: any) {
+    let errorMessage = "Unknown error";    
+    // Check for ethers specific error structure
+    if (err.reason) {
+      errorMessage = err.reason;
+    } else if (err.error && err.error.message) {
+      errorMessage = err.error.message;
+    } else if (err.message) {
+      errorMessage = err.message;
+    } else if (err.revert && err.revert.args && err.revert.args.length > 0) {
+      errorMessage = err.revert.args[0];
+    }
+    throw new Error(errorMessage);
+  }
+}
+
+/**
+ * Validate agent registration
+ * @param did 
+ * @param chainId 
+ * @param rpcUrl 
+ * @returns 
+ */
+async function validateAgent(
+  did: string,
+  chainId: 80002 | 296,
+  rpcUrl: string = ''
+) {
+  try {
+    if (!rpcUrl) {
+      if (chainId === 80002) {
+        rpcUrl = process.env.AMOY_RPC_URL as string
+      }
+      if (chainId === 296) {
+        rpcUrl = process.env.HEDERA_RPC_URL as string
+      }
+    }
+    
+    // Decide registry contract based on chain
+    let REGISTRY_CONTRACT = process.env.IDENTITY_REGISTRY_AMOY;
+    if (chainId === 296) REGISTRY_CONTRACT = process.env.IDENTITY_REGISTRY_HEDERA;
+    
+    const ethAddress = getETHPublicKeyFromDID(did);
+    
+    const provider = new ethers.JsonRpcProvider(rpcUrl as string);
+    const registry = new ethers.Contract(REGISTRY_CONTRACT as string, identityRegistryABI.abi, provider);
+    const agentDetails = await registry.getAgentByAddress(ethAddress);
+    return {
+      did: agentDetails[0],
+      agentId: Number(agentDetails[1]),
+      description: agentDetails[2],
+      serviceEndPoint: agentDetails[3]
+    };
+  } catch (err: any) {
+    let errorMessage = "Unknown error";    
+    // Check for ethers specific error structure
+    if (err.reason) {
+      errorMessage = err.reason;
+    } else if (err.error && err.error.message) {
+      errorMessage = err.error.message;
+    } else if (err.message) {
+      errorMessage = err.message;
+    } else if (err.revert && err.revert.args && err.revert.args.length > 0) {
+      errorMessage = err.revert.args[0];
+    }
+    throw new Error(errorMessage);
+  }
+}
 // Export all public functions and types
 export default {
   generateDID,
-  getETHPublicKeyFromDID
+  getETHPublicKeyFromDID,
+  createIdentity,
+  validateAgent
 };
