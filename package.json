@@ -1,6 +1,6 @@
 {
   "name": "@zkred/agent-id",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "A package for zkred agent identification",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
