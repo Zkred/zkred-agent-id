@@ -12,6 +12,8 @@ import {
   HEDERA_RPC_URL,
   IDENTITY_REGISTRY_HEDERA,
   X402_API_URL,
+  OG_RPC_URL,
+  IDENTITY_REGISTRY_OG,
 } from "./config";
 import axios from "axios";
 // @ts-ignore
@@ -29,6 +31,47 @@ const TYPES = {
     { name: "expiry", type: "uint256" },
   ],
 };
+
+function setRpcUrl(chainId: 80002 | 296 | 16602, rpcUrl: string = "") {
+  if (!rpcUrl) {
+    if (chainId === 80002) {
+      rpcUrl = AMOY_RPC_URL;
+    }
+    if (chainId === 296) {
+      rpcUrl = HEDERA_RPC_URL;
+    }
+    if (chainId === 16602) {
+      rpcUrl = OG_RPC_URL;
+    }
+  }
+  return rpcUrl;
+}
+
+function handleError(err: any) {
+  let errorMessage = "Unknown error";
+  // Check for ethers specific error structure
+  if (err.reason) {
+    errorMessage = err.reason;
+  } else if (err.error && err.error.message) {
+    errorMessage = err.error.message;
+  } else if (err.message) {
+    errorMessage = err.message;
+  } else if (err.revert && err.revert.args && err.revert.args.length > 0) {
+    errorMessage = err.revert.args[0];
+  }
+  throw new Error(errorMessage);
+}
+
+function generateChallenge(length = 10) {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * chars.length);
+    result += chars[randomIndex];
+  }
+  return result;
+}
 
 /**
  * Generate Privado ID DID from Ethereum address
@@ -127,7 +170,7 @@ function getETHPublicKeyFromDID(didFull: string): string | null {
 async function createIdentity(
   privateKey: string,
   description: string,
-  chainId: 80002 | 296,
+  chainId: 80002 | 296 | 16602,
   serviceEndpoint: string,
   rpcUrl: string = ""
 ) {
@@ -148,7 +191,7 @@ async function createIdentity(
     // Decide registry contract based on chain
     let REGISTRY_CONTRACT = IDENTITY_REGISTRY_AMOY;
     if (chainId === 296) REGISTRY_CONTRACT = IDENTITY_REGISTRY_HEDERA;
-
+    if (chainId === 16602) REGISTRY_CONTRACT = IDENTITY_REGISTRY_OG;
     const registry = new ethers.Contract(
       REGISTRY_CONTRACT,
       identityRegistryABI.abi,
@@ -156,20 +199,18 @@ async function createIdentity(
     );
     const registrationFee = ethers.parseEther("0.01");
 
-    const agentDetails = await registry.getAgentByAddress(publicKey);
-
-    const availableBalance = await provider.getBalance(publicKey);
-    const balanceInEther = ethers.formatEther(availableBalance);
-
-    if (+balanceInEther < registrationFee) {
-      throw new Error("Insufficient balance to cover registration fee");
+    let agentDetails;
+    try {
+      agentDetails = await registry.getAgentByAddress(publicKey);
+    } catch (err: any) {
+      console.log("Error ==> ", err?.message);
     }
 
     if (agentDetails?.length) {
       throw new Error("Agent already registered");
     }
 
-    const did = generateDID(publicKey, "polygon", "amoy");
+    const did = generateDID(publicKey, "privado", "main");
     const tx = await registry.registerAgent(did, description, serviceEndpoint, {
       value: registrationFee,
     });
@@ -200,7 +241,7 @@ async function createIdentity(
  */
 async function validateAgent(
   did: string,
-  chainId: 80002 | 296,
+  chainId: 80002 | 296 | 16602,
   rpcUrl: string = ""
 ) {
   try {
@@ -209,6 +250,7 @@ async function validateAgent(
     // Decide registry contract based on chain
     let REGISTRY_CONTRACT = IDENTITY_REGISTRY_AMOY;
     if (chainId === 296) REGISTRY_CONTRACT = IDENTITY_REGISTRY_HEDERA;
+    if (chainId === 16602) REGISTRY_CONTRACT = IDENTITY_REGISTRY_OG;
 
     const ethAddress = getETHPublicKeyFromDID(did);
     const provider = new ethers.JsonRpcProvider(rpcUrl as string);
@@ -232,7 +274,7 @@ async function validateAgent(
 async function registerAgentByUSDC(
   privateKey: string,
   description: string,
-  chainId: 80002 | 296,
+  chainId: 80002 | 296 | 16602,
   serviceEndpoint: string,
   rpcUrl: string = ""
 ) {
@@ -247,6 +289,7 @@ async function registerAgentByUSDC(
 
       let REGISTRY_CONTRACT = IDENTITY_REGISTRY_AMOY;
       if (chainId === 296) REGISTRY_CONTRACT = IDENTITY_REGISTRY_HEDERA;
+      if (chainId === 16602) REGISTRY_CONTRACT = IDENTITY_REGISTRY_OG;
 
       const registry = new ethers.Contract(
         REGISTRY_CONTRACT,
@@ -336,31 +379,141 @@ async function registerAgentByUSDC(
   });
 }
 
-function setRpcUrl(chainId: 80002 | 296, rpcUrl: string = "") {
-  if (!rpcUrl) {
-    if (chainId === 80002) {
-      rpcUrl = AMOY_RPC_URL;
-    }
-    if (chainId === 296) {
-      rpcUrl = HEDERA_RPC_URL;
-    }
-  }
-  return rpcUrl;
+/**
+ * Generate private key
+ * @returns
+ */
+function generatePrivateKey() {
+  const wallet = ethers.Wallet.createRandom();
+  return wallet.privateKey;
 }
 
-function handleError(err: any) {
-  let errorMessage = "Unknown error";
-  // Check for ethers specific error structure
-  if (err.reason) {
-    errorMessage = err.reason;
-  } else if (err.error && err.error.message) {
-    errorMessage = err.error.message;
-  } else if (err.message) {
-    errorMessage = err.message;
-  } else if (err.revert && err.revert.args && err.revert.args.length > 0) {
-    errorMessage = err.revert.args[0];
+/**
+ * initiate handshake between two agents
+ * @param initiatorChainId
+ * @param initiatorDid
+ * @param receiverChainId
+ * @param receiverDid
+ * @param initiatorRpcUrl
+ * @param receiverRpcUrl
+ * @returns
+ */
+async function initiateHandshake(
+  initiatorDid: string,
+  initiatorChainId: 80002 | 296 | 16602,
+  receiverDid: string,
+  receiverChainId: 80002 | 296 | 16602,
+  initiatorRpcUrl: string = "",
+  receiverRpcUrl: string = ""
+) {
+  const sessionId = Date.now();
+  initiatorRpcUrl = setRpcUrl(initiatorChainId, initiatorRpcUrl);
+  receiverRpcUrl = setRpcUrl(receiverChainId, receiverRpcUrl);
+
+  const initiatorAgent = await validateAgent(
+    initiatorDid,
+    initiatorChainId,
+    initiatorRpcUrl
+  );
+
+  if (!initiatorAgent) {
+    throw new Error("Initiator agent not found");
   }
-  throw new Error(errorMessage);
+  // Get service endpoint of receiver
+  const receiverAgent = await validateAgent(
+    receiverDid,
+    receiverChainId,
+    receiverRpcUrl
+  );
+
+  if (!receiverAgent) {
+    throw new Error("Receiver agent not found");
+  }
+
+  // Call receiver agent's /initiate url
+  try {
+    const response = await axios.post(
+      `${receiverAgent?.serviceEndPoint}/initiate`,
+      {
+        sessionId,
+        initiatorDid,
+        initiatorChainId,
+      }
+    );
+
+    return {
+      sessionId,
+      receiverAgentCallbackEndPoint: `${receiverAgent?.serviceEndPoint}/callback`,
+      challenge: response?.data?.data?.challenge,
+    };
+  } catch (err) {
+    throw err;
+  }
+}
+
+/**
+ *
+ * @param privateKey
+ * @param sessionId
+ * @param receiverAgentCallbackEndPoint
+ * @param challenge
+ * @returns
+ */
+async function copmleteHandshake(
+  privateKey: string,
+  sessionId: string,
+  receiverAgentCallbackEndPoint: string,
+  challenge: string
+) {
+  const message = JSON.stringify({
+    sessionId,
+    challenge,
+  });
+
+  const wallet = new ethers.Wallet(privateKey);
+  const signature = await wallet.signMessage(message);
+
+  // call service endpoint of receiver with signature
+  try {
+    const response = await axios.post(receiverAgentCallbackEndPoint, {
+      sessionId,
+      challenge,
+      signature,
+    });
+
+    if (
+      response?.data?.data?.sessionId === sessionId &&
+      response?.data?.data?.status === "handshake_completed"
+    ) {
+      return true;
+    }
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ *
+ * @param sessionId
+ * @param challenge
+ * @param signature
+ * @param did
+ * @returns
+ */
+function verifySignature(
+  sessionId: string,
+  challenge: string,
+  signature: string,
+  did: string
+) {
+  const message = JSON.stringify({
+    sessionId,
+    challenge,
+  });
+  const recoveredAddress = ethers.verifyMessage(message, signature);
+  const derivedAddress = getETHPublicKeyFromDID(did);
+
+  return recoveredAddress?.toLowerCase() === derivedAddress?.toLowerCase();
 }
 
 // Export all public functions and types
@@ -370,4 +523,9 @@ export default {
   createIdentity,
   validateAgent,
   registerAgentByUSDC,
+  generatePrivateKey,
+  generateChallenge,
+  verifySignature,
+  copmleteHandshake,
+  initiateHandshake,
 };
