@@ -30,8 +30,8 @@ export const CHAIN_CONFIGS: Record<SupportedChainId, ChainConfig> = {
     chainId: 324705682,
     rpcUrl:
       "https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha",
-    identityRegistryV1: "0x4FF67C5E06298Ff56A3a000AB40113D2C8380951",
-    identityRegistryProxy: "",
+    identityRegistryV1: "0x0bD4BeBeB972f5C12faC137f85463B87bf5A2885",
+    identityRegistryProxy: "0xF90bf1e2147b109bE3506C9Ec4F8cC2CEBdd7022",
   },
   421614: {
     name: "arbitrum-sepolia",
@@ -75,9 +75,9 @@ export function getRpcUrl(
 
 /**
  * Get registry contract address for a chain
- * Prefers proxy address if available, falls back to V1
+ * Always returns the proxy contract address
  */
 export function getRegistryAddress(chainId: SupportedChainId): string {
   const config = getChainConfig(chainId);
-  return config.identityRegistryProxy || config.identityRegistryV1;
+  return config.identityRegistryProxy;
 }
